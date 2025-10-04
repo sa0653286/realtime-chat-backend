@@ -1,71 +1,77 @@
-// server.js
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const cors = require('cors');
-const mongoose = require('mongoose');
-const bcrypt = require('bcrypt');
+const express = require("express");
+const cors = require("cors");
+const mongoose = require("mongoose");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcrypt");
+const http = require("http");
+const { Server } = require("socket.io");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MongoDB connection
-const mongoURL = 'mongodb+srv://sa0653286:sa0653286@gmail@sa0653286.z7tyl9v.mongodb.net/chatflow?retryWrites=true&w=majority';
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: "*" } });
+
+// ------------------ MongoDB ------------------
+const dbPassword = "sa0653286@gmail";
+const mongoURL = `mongodb+srv://sa0653286:${dbPassword}@sa0653286.z7tyl9v.mongodb.net/chatflow?retryWrites=true&w=majority`;
+
 mongoose.connect(mongoURL, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log("MongoDB connected"))
-  .catch(err => console.log(err));
+  .catch(err => console.log("MongoDB error:", err));
 
-// User Schema
+// ------------------ Schemas ------------------
 const userSchema = new mongoose.Schema({
   username: String,
   email: { type: String, unique: true },
   password: String,
-  contacts: [{ name: String, email: String }]
+  isAdmin: { type: Boolean, default: false },
 });
+
 const User = mongoose.model("User", userSchema);
 
-// Signup
+// ------------------ Routes ------------------
+const JWT_SECRET = "chatflow_secret";
+
 app.post("/signup", async (req, res) => {
   const { username, email, password } = req.body;
-  if(!username || !email || !password) return res.json({ error: "Please fill all fields" });
+  if (!username || !email || !password) return res.json({ success: false, message: "All fields required" });
 
-  const existing = await User.findOne({ email });
-  if(existing) return res.json({ error: "Email already exists" });
+  const exists = await User.findOne({ email });
+  if (exists) return res.json({ success: false, message: "Email already registered" });
 
   const hashedPassword = await bcrypt.hash(password, 10);
-  const user = new User({ username, email, password: hashedPassword });
-  await user.save();
-  res.json({ success: true });
+  const user = await User.create({ username, email, password: hashedPassword });
+  res.json({ success: true, message: "Account created", user: { username: user.username, email: user.email } });
 });
 
-// Login
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
-  if(!email || !password) return res.json({ error: "Please fill all fields" });
+  if (!email || !password) return res.json({ success: false, message: "All fields required" });
 
   const user = await User.findOne({ email });
-  if(!user) return res.json({ error: "Invalid email or password" });
+  if (!user) return res.json({ success: false, message: "Invalid credentials" });
 
-  const match = await bcrypt.compare(password, user.password);
-  if(!match) return res.json({ error: "Invalid email or password" });
+  const valid = await bcrypt.compare(password, user.password);
+  if (!valid) return res.json({ success: false, message: "Invalid credentials" });
 
-  res.json({ success: true, username: user.username, email: user.email, contacts: user.contacts });
+  const token = jwt.sign({ email: user.email, isAdmin: user.isAdmin }, JWT_SECRET, { expiresIn: "7d" });
+  res.json({ success: true, token, user: { username: user.username, email: user.email, isAdmin: user.isAdmin } });
 });
 
-// Real-time chat with Socket.IO
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
-
+// ------------------ Socket.IO ------------------
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
   socket.on("send_message", (data) => {
+    // emit message to all connected clients (you can add room support later)
     io.emit("receive_message", data);
   });
 
   socket.on("disconnect", () => console.log("User disconnected:", socket.id));
 });
 
+// ------------------ Start Server ------------------
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
