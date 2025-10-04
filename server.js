@@ -1,115 +1,69 @@
-const express = require("express");
-const mongoose = require("mongoose");
-const cors = require("cors");
-const jwt = require("jsonwebtoken");
-const bcrypt = require("bcrypt");
-const http = require("http");
-const { Server } = require("socket.io");
+// server.js
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const mongoose = require('mongoose');
+const bcrypt = require('bcrypt');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+// MongoDB connection
+const mongoURL = 'mongodb+srv://sa0653286:sa0653286@gmail@sa0653286.z7tyl9v.mongodb.net/chatflow?retryWrites=true&w=majority';
+mongoose.connect(mongoURL, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log("MongoDB connected"))
+  .catch(err => console.log(err));
 
-// --- MongoDB ---
-mongoose.connect(
-  "mongodb+srv://sa0653286:sa0653286@gmail@sa0653286.z7tyl9v.mongodb.net/chatflowDB?retryWrites=true&w=majority",
-  { useNewUrlParser: true, useUnifiedTopology: true }
-);
-
+// User Schema
 const userSchema = new mongoose.Schema({
   username: String,
+  email: { type: String, unique: true },
   password: String,
-  contacts: [String],
+  contacts: [{ name: String, email: String }]
 });
-
-const messageSchema = new mongoose.Schema({
-  from: String,
-  to: String,
-  text: String,
-  createdAt: { type: Date, default: Date.now },
-});
-
 const User = mongoose.model("User", userSchema);
-const Message = mongoose.model("Message", messageSchema);
 
-const SECRET = "chatflowsecret";
-
-// --- Signup ---
+// Signup
 app.post("/signup", async (req, res) => {
-  const { username, password } = req.body;
-  const existing = await User.findOne({ username });
-  if (existing) return res.json({ success: false, message: "Email already exists" });
-  const hashed = await bcrypt.hash(password, 10);
-  await User.create({ username, password: hashed, contacts: [] });
-  res.json({ success: true, message: "Signup successful" });
-});
+  const { username, email, password } = req.body;
+  if(!username || !email || !password) return res.json({ error: "Please fill all fields" });
 
-// --- Login ---
-app.post("/login", async (req, res) => {
-  const { username, password } = req.body;
-  const user = await User.findOne({ username });
-  if (!user) return res.json({ success: false, message: "Invalid credentials" });
-  const valid = await bcrypt.compare(password, user.password);
-  if (!valid) return res.json({ success: false, message: "Invalid credentials" });
-  const token = jwt.sign({ username }, SECRET, { expiresIn: "7d" });
-  res.json({ success: true, message: "Login successful", token });
-});
+  const existing = await User.findOne({ email });
+  if(existing) return res.json({ error: "Email already exists" });
 
-// --- Auth middleware ---
-function auth(req, res, next) {
-  const header = req.headers["authorization"];
-  if (!header) return res.status(401).json({ success: false, message: "Unauthorized" });
-  const token = header.split(" ")[1];
-  jwt.verify(token, SECRET, (err, decoded) => {
-    if (err) return res.status(401).json({ success: false, message: "Unauthorized" });
-    req.username = decoded.username;
-    next();
-  });
-}
-
-// --- Get user info ---
-app.get("/loginInfo", auth, async (req, res) => {
-  res.json({ username: req.username });
-});
-
-// --- Contacts ---
-app.get("/contacts", auth, async (req, res) => {
-  const user = await User.findOne({ username: req.username });
-  res.json({ contacts: user.contacts });
-});
-
-app.post("/contacts", auth, async (req, res) => {
-  const { contact } = req.body;
-  const user = await User.findOne({ username: req.username });
-  if (!user.contacts.includes(contact)) user.contacts.push(contact);
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const user = new User({ username, email, password: hashedPassword });
   await user.save();
   res.json({ success: true });
 });
 
-// --- Messages ---
-app.get("/messages/:contact", auth, async (req, res) => {
-  const msgs = await Message.find({ 
-    $or: [
-      { from: req.username, to: req.params.contact },
-      { from: req.params.contact, to: req.username }
-    ]
-  }).sort({ createdAt: 1 });
-  res.json({ messages: msgs });
+// Login
+app.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+  if(!email || !password) return res.json({ error: "Please fill all fields" });
+
+  const user = await User.findOne({ email });
+  if(!user) return res.json({ error: "Invalid email or password" });
+
+  const match = await bcrypt.compare(password, user.password);
+  if(!match) return res.json({ error: "Invalid email or password" });
+
+  res.json({ success: true, username: user.username, email: user.email, contacts: user.contacts });
 });
 
-app.post("/messages", auth, async (req, res) => {
-  const { to, text } = req.body;
-  const msg = await Message.create({ from: req.username, to, text });
-  io.emit("receive_message", msg);
-  res.json({ success: true });
-});
+// Real-time chat with Socket.IO
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: "*" } });
 
-// --- Socket.IO ---
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
+
+  socket.on("send_message", (data) => {
+    io.emit("receive_message", data);
+  });
+
   socket.on("disconnect", () => console.log("User disconnected:", socket.id));
 });
 
